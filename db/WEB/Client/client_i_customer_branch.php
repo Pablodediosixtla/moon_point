@@ -49,36 +49,38 @@ function mp_customer_name_exists($con, $organization_id, $customer_name) {
   return !empty($row);
 }
 
-function mp_make_customer_name($con, $organization_id, $preferred_name, $customer_access_id, $phone_for_customer) {
-  $base = trim((string)$preferred_name);
+function mp_random_digits($length = 19) {
+  $digits = "";
 
-  if ($base === "") {
-    $base = trim((string)$phone_for_customer);
+  for ($i = 0; $i < $length; $i++) {
+    if ($i === 0) {
+      $digits .= (string)random_int(1, 9);
+    } else {
+      $digits .= (string)random_int(0, 9);
+    }
   }
 
-  if ($base === "") {
-    $base = "Cliente " . $customer_access_id;
+  return $digits;
+}
+
+function mp_generate_unique_customer_name($con, $organization_id, $prefix = "US") {
+  $max_attempts = 20;
+
+  for ($i = 0; $i < $max_attempts; $i++) {
+    $candidate = $prefix . "-" . mp_random_digits(19);
+
+    if (!mp_customer_name_exists($con, $organization_id, $candidate)) {
+      return $candidate;
+    }
   }
 
-  $base = preg_replace('/\s+/', ' ', $base);
-  $base = substr($base, 0, 64);
+  $fallback = $prefix . "-" . date("ymdHis") . "-" . random_int(1000, 9999);
 
-  if (!mp_customer_name_exists($con, $organization_id, $base)) {
-    return $base;
+  if (strlen($fallback) > 64) {
+    $fallback = substr($fallback, 0, 64);
   }
 
-  $suffix = "-" . $customer_access_id;
-  $max_base_length = 64 - strlen($suffix);
-  $candidate = substr($base, 0, $max_base_length) . $suffix;
-
-  if (!mp_customer_name_exists($con, $organization_id, $candidate)) {
-    return $candidate;
-  }
-
-  $suffix = "-" . time();
-  $max_base_length = 64 - strlen($suffix);
-
-  return substr($base, 0, $max_base_length) . $suffix;
+  return $fallback;
 }
 
 function mp_get_initial_level_id($con, $organization_id) {
@@ -101,8 +103,6 @@ function mp_get_initial_level_id($con, $organization_id) {
 }
 
 function mp_upsert_moon_customer($con, $organization_id, $customer) {
-  $customer_access_id = (int)$customer['id'];
-
   $raw_phone = mp_clean_value($customer['phone'] ?? "");
   $phone_normalized = mp_clean_value($customer['phone_normalized'] ?? "");
 
@@ -113,14 +113,11 @@ function mp_upsert_moon_customer($con, $organization_id, $customer) {
   $phone_for_customer = $phone_normalized !== "" ? $phone_normalized : $raw_phone;
 
   $email = mp_clean_value($customer['email'] ?? "");
-  $username = mp_clean_value($customer['username'] ?? "");
   $full_name = mp_clean_value($customer['full_name'] ?? "");
   $birth_date = mp_clean_value($customer['birth_date'] ?? "");
 
-  $preferred_name = $full_name !== "" ? $full_name : ($username !== "" ? $username : $phone_for_customer);
-
   $sqlFind = "
-    SELECT id
+    SELECT id, customer_name
     FROM moon_customer
     WHERE organization_id = ?
       AND (
@@ -148,6 +145,7 @@ function mp_upsert_moon_customer($con, $organization_id, $customer) {
 
   if ($existing) {
     $moon_customer_id = (int)$existing['id'];
+    $customer_name = (string)$existing['customer_name'];
 
     $sqlUpdate = "
       UPDATE moon_customer
@@ -179,17 +177,14 @@ function mp_upsert_moon_customer($con, $organization_id, $customer) {
 
     $stmt->close();
 
-    return $moon_customer_id;
+    return [
+      "moon_customer_id" => $moon_customer_id,
+      "customer_name" => $customer_name,
+      "created" => false
+    ];
   }
 
-  $customer_name = mp_make_customer_name(
-    $con,
-    $organization_id,
-    $preferred_name,
-    $customer_access_id,
-    $phone_for_customer
-  );
-
+  $customer_name = mp_generate_unique_customer_name($con, $organization_id, "US");
   $address = "";
 
   $sqlInsert = "
@@ -226,7 +221,11 @@ function mp_upsert_moon_customer($con, $organization_id, $customer) {
   $moon_customer_id = (int)$stmt->insert_id;
   $stmt->close();
 
-  return $moon_customer_id;
+  return [
+    "moon_customer_id" => $moon_customer_id,
+    "customer_name" => $customer_name,
+    "created" => true
+  ];
 }
 
 try {
@@ -308,7 +307,12 @@ try {
 
   $con->begin_transaction();
 
-  $moon_customer_id = mp_upsert_moon_customer($con, $organization_id, $customer);
+  $customerResult = mp_upsert_moon_customer($con, $organization_id, $customer);
+
+  $moon_customer_id = (int)$customerResult["moon_customer_id"];
+  $moon_customer_name = (string)$customerResult["customer_name"];
+  $moon_customer_created = (bool)$customerResult["created"];
+
   $current_level_id = mp_get_initial_level_id($con, $organization_id);
 
   $sqlExisting = "
@@ -363,7 +367,9 @@ try {
       "message" => "La sucursal ya estaba enlazada.",
       "already_linked" => true,
       "id" => $relation_id,
-      "moon_customer_id" => $moon_customer_id
+      "moon_customer_id" => $moon_customer_id,
+      "moon_customer_name" => $moon_customer_name,
+      "moon_customer_created" => $moon_customer_created
     ]);
   }
 
@@ -409,11 +415,14 @@ try {
     "message" => "Sucursal agregada correctamente.",
     "id" => $new_id,
     "moon_customer_id" => $moon_customer_id,
+    "moon_customer_name" => $moon_customer_name,
+    "moon_customer_created" => $moon_customer_created,
     "data" => [
       "id" => $new_id,
       "customer_access_id" => $customer_access_id,
       "organization_id" => $organization_id,
       "moon_customer_id" => $moon_customer_id,
+      "moon_customer_name" => $moon_customer_name,
       "branch_name" => $branch['public_name'] ?: $branch['Nombre'],
       "linked_by" => $linked_by
     ]
