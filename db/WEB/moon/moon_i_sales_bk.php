@@ -56,14 +56,11 @@ $items = $in['items'];
 
 // Calcular subtotal por servidor
 $items_subtotal = 0.0;
-$total_qty_for_rewards = 0;
-
 foreach ($items as $it) {
   $q  = isset($it['qty']) ? (int)$it['qty'] : 0;
   $up = isset($it['unit_price']) ? (float)$it['unit_price'] : 0.0;
   if ($q <= 0) { echo json_encode(["success"=>false,"error"=>"Item con qty inválido"]); exit; }
   $items_subtotal += ($q * $up);
-  $total_qty_for_rewards += $q;
 }
 
 // Descuentos / impuestos
@@ -100,161 +97,6 @@ $con->set_charset('utf8mb4');
    forzamos el offset explícito (no requiere tablas de zonas). */
 if (!$con->query("SET time_zone = @@global.time_zone")) {
   $con->query("SET time_zone = '-06:00'");
-}
-
-function mp_clear_results($con) {
-  while ($con->more_results()) {
-    $con->next_result();
-
-    if ($res = $con->use_result()) {
-      $res->free();
-    }
-  }
-}
-
-function mp_get_customer_branch_id_for_points($con, $organization_id, $customer_id) {
-  if ($organization_id <= 0 || $customer_id <= 0) {
-    return 0;
-  }
-
-  $sql = "
-    SELECT cb.id
-    FROM moon_customer_branch cb
-    INNER JOIN moon_customer_access ca
-      ON ca.id = cb.customer_access_id
-    WHERE cb.organization_id = ?
-      AND cb.moon_customer_id = ?
-      AND cb.relation_status = 1
-      AND ca.deleted_at IS NULL
-      AND ca.access_status = 1
-    LIMIT 1
-  ";
-
-  $stmt = $con->prepare($sql);
-  if (!$stmt) {
-    throw new Exception("Error al preparar búsqueda de relación cliente/sucursal: " . $con->error);
-  }
-
-  $stmt->bind_param("ii", $organization_id, $customer_id);
-
-  if (!$stmt->execute()) {
-    $error = $stmt->error;
-    $stmt->close();
-    throw new Exception("Error al buscar relación cliente/sucursal: " . $error);
-  }
-
-  $row = $stmt->get_result()->fetch_assoc();
-  $stmt->close();
-
-  return $row ? (int)$row['id'] : 0;
-}
-
-function mp_call_level_points_sp($con, $customer_branch_id, $sale_id) {
-  $level_points = 50;
-  $source = "purchase";
-  $reference_id = $sale_id;
-  $notes = "Puntaje de nivel generado por venta";
-
-  $sql = "CALL sp_moon_add_customer_branch_level_points(?, ?, ?, ?, ?)";
-  $stmt = $con->prepare($sql);
-
-  if (!$stmt) {
-    throw new Exception("Error al preparar SP de puntaje de nivel: " . $con->error);
-  }
-
-  $stmt->bind_param(
-    "iisis",
-    $customer_branch_id,
-    $level_points,
-    $source,
-    $reference_id,
-    $notes
-  );
-
-  if (!$stmt->execute()) {
-    $error = $stmt->error;
-    $stmt->close();
-    throw new Exception("Error al sumar puntaje de nivel: " . $error);
-  }
-
-  if ($res = $stmt->get_result()) {
-    $res->free();
-  }
-
-  $stmt->close();
-  mp_clear_results($con);
-
-  return $level_points;
-}
-
-function mp_call_reward_points_sp($con, $customer_branch_id, $sale_id, $reward_points) {
-  if ($reward_points <= 0) {
-    return 0;
-  }
-
-  $movement_type = 1; // 1=EARN
-  $source = "purchase";
-  $reference_id = $sale_id;
-  $notes = "Puntos de recompensa generados por productos";
-
-  $sql = "CALL sp_moon_add_customer_branch_reward_points(?, ?, ?, ?, ?, ?)";
-  $stmt = $con->prepare($sql);
-
-  if (!$stmt) {
-    throw new Exception("Error al preparar SP de puntos de recompensa: " . $con->error);
-  }
-
-  $stmt->bind_param(
-    "iiisis",
-    $customer_branch_id,
-    $reward_points,
-    $movement_type,
-    $source,
-    $reference_id,
-    $notes
-  );
-
-  if (!$stmt->execute()) {
-    $error = $stmt->error;
-    $stmt->close();
-    throw new Exception("Error al sumar puntos de recompensa: " . $error);
-  }
-
-  if ($res = $stmt->get_result()) {
-    $res->free();
-  }
-
-  $stmt->close();
-  mp_clear_results($con);
-
-  return $reward_points;
-}
-
-function mp_apply_sale_points_if_app_customer($con, $organization_id, $customer_id, $sale_id, $total_qty_for_rewards) {
-  $customer_branch_id = mp_get_customer_branch_id_for_points($con, $organization_id, $customer_id);
-
-  if ($customer_branch_id <= 0) {
-    return [
-      "points_applied" => false,
-      "points_reason" => "Cliente sin acceso app o sin relación cliente/sucursal activa.",
-      "customer_branch_id" => null,
-      "level_points_awarded" => 0,
-      "reward_points_awarded" => 0
-    ];
-  }
-
-  $reward_points = max(0, (int)$total_qty_for_rewards) * 5;
-
-  $level_points_awarded = mp_call_level_points_sp($con, $customer_branch_id, $sale_id);
-  $reward_points_awarded = mp_call_reward_points_sp($con, $customer_branch_id, $sale_id, $reward_points);
-
-  return [
-    "points_applied" => true,
-    "points_reason" => "Puntos aplicados correctamente.",
-    "customer_branch_id" => $customer_branch_id,
-    "level_points_awarded" => $level_points_awarded,
-    "reward_points_awarded" => $reward_points_awarded
-  ];
 }
 
 try {
@@ -334,39 +176,10 @@ try {
   }
 
   $con->commit();
-
-  $points_result = [
-    "points_applied" => false,
-    "points_reason" => "No se intentó aplicar puntos.",
-    "customer_branch_id" => null,
-    "level_points_awarded" => 0,
-    "reward_points_awarded" => 0
-  ];
-
-  try {
-    $points_result = mp_apply_sale_points_if_app_customer(
-      $con,
-      $organization_id,
-      $customer_id,
-      $sale_id,
-      $total_qty_for_rewards
-    );
-  } catch (Throwable $pointsError) {
-    $points_result = [
-      "points_applied" => false,
-      "points_reason" => "La venta fue registrada, pero no fue posible aplicar puntos.",
-      "points_error" => $pointsError->getMessage(),
-      "customer_branch_id" => null,
-      "level_points_awarded" => 0,
-      "reward_points_awarded" => 0
-    ];
-  }
-
   echo json_encode([
     "success" => true,
     "message" => "Venta registrada",
-    "id"      => $sale_id,
-    "points"  => $points_result
+    "id"      => $sale_id
   ]);
 
 } catch (Throwable $e) {
