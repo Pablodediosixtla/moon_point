@@ -315,8 +315,21 @@ try {
 
   $current_level_id = mp_get_initial_level_id($con, $organization_id);
 
+  /*
+    Importante:
+    No se borra ni reinicia la relación si ya existe.
+    Esto conserva:
+    - level_points
+    - reward_points_balance
+    - total_purchases
+    - total_amount
+    - historial de movimientos
+    - current_level_id si ya existía
+  */
   $sqlExisting = "
-    SELECT id
+    SELECT
+      id,
+      relation_status
     FROM moon_customer_branch
     WHERE customer_access_id = ?
       AND organization_id = ?
@@ -331,6 +344,8 @@ try {
 
   if ($existingRelation) {
     $relation_id = (int)$existingRelation['id'];
+    $previous_relation_status = isset($existingRelation['relation_status']) ? (int)$existingRelation['relation_status'] : 0;
+    $was_reactivated = $previous_relation_status !== 1;
 
     $sqlUpdateRelation = "
       UPDATE moon_customer_branch
@@ -339,6 +354,7 @@ try {
         current_level_id = COALESCE(current_level_id, ?),
         relation_status = 1,
         linked_by = ?,
+        linked_at = NOW(),
         updated_at = NOW()
       WHERE id = ?
     ";
@@ -364,12 +380,25 @@ try {
 
     client_response([
       "success" => true,
-      "message" => "La sucursal ya estaba enlazada.",
-      "already_linked" => true,
+      "message" => $was_reactivated ? "Sucursal reactivada correctamente." : "La sucursal ya estaba enlazada.",
+      "already_linked" => !$was_reactivated,
+      "reactivated" => $was_reactivated,
       "id" => $relation_id,
       "moon_customer_id" => $moon_customer_id,
       "moon_customer_name" => $moon_customer_name,
-      "moon_customer_created" => $moon_customer_created
+      "moon_customer_created" => $moon_customer_created,
+      "data" => [
+        "id" => $relation_id,
+        "customer_access_id" => $customer_access_id,
+        "organization_id" => $organization_id,
+        "moon_customer_id" => $moon_customer_id,
+        "moon_customer_name" => $moon_customer_name,
+        "branch_name" => $branch['public_name'] ?: $branch['Nombre'],
+        "linked_by" => $linked_by,
+        "relation_status" => 1,
+        "already_linked" => !$was_reactivated,
+        "reactivated" => $was_reactivated
+      ]
     ]);
   }
 
@@ -413,6 +442,8 @@ try {
   client_response([
     "success" => true,
     "message" => "Sucursal agregada correctamente.",
+    "already_linked" => false,
+    "reactivated" => false,
     "id" => $new_id,
     "moon_customer_id" => $moon_customer_id,
     "moon_customer_name" => $moon_customer_name,
@@ -424,7 +455,10 @@ try {
       "moon_customer_id" => $moon_customer_id,
       "moon_customer_name" => $moon_customer_name,
       "branch_name" => $branch['public_name'] ?: $branch['Nombre'],
-      "linked_by" => $linked_by
+      "linked_by" => $linked_by,
+      "relation_status" => 1,
+      "already_linked" => false,
+      "reactivated" => false
     ]
   ]);
 
