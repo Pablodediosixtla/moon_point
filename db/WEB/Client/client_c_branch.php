@@ -42,6 +42,7 @@ $sql = "
   LEFT JOIN moon_customer_branch cb
     ON cb.organization_id = u.id
     AND cb.customer_access_id = ?
+    AND cb.relation_status = 1
   LEFT JOIN moon_branch_level bl
     ON bl.id = cb.current_level_id
   WHERE u.Status = 1
@@ -93,7 +94,20 @@ $result = $stmt->get_result();
 $data = [];
 
 while ($row = $result->fetch_assoc()) {
+  $row['organization_id'] = (int)$row['organization_id'];
+  $row['branch_status'] = (int)$row['branch_status'];
+  $row['qr_enabled'] = (int)$row['qr_enabled'];
+  $row['is_active'] = (int)$row['is_active'];
+
+  $row['customer_branch_id'] = $row['customer_branch_id'] !== null ? (int)$row['customer_branch_id'] : null;
+  $row['relation_status'] = $row['relation_status'] !== null ? (int)$row['relation_status'] : null;
+  $row['level_points'] = $row['level_points'] !== null ? (int)$row['level_points'] : 0;
+  $row['reward_points_balance'] = $row['reward_points_balance'] !== null ? (int)$row['reward_points_balance'] : 0;
+  $row['total_purchases'] = $row['total_purchases'] !== null ? (int)$row['total_purchases'] : 0;
+  $row['total_amount'] = $row['total_amount'] !== null ? (string)$row['total_amount'] : "0.00";
+
   $row['is_linked'] = !empty($row['customer_branch_id']);
+
   $data[] = $row;
 }
 
