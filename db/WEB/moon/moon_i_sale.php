@@ -150,7 +150,7 @@ function mp_get_customer_branch_id_for_points($con, $organization_id, $customer_
 }
 
 function mp_call_level_points_sp($con, $customer_branch_id, $sale_id) {
-  $level_points = 50;
+  $level_points = 25;
   $source = "purchase";
   $reference_id = $sale_id;
   $notes = "Puntaje de nivel generado por venta";
